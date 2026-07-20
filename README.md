@@ -103,7 +103,7 @@ A dedicated bash script is provided to instantly deploy a private, secure SOCKS5
 To install, update, or remove the Dante SOCKS5 proxy, execute the following command on your Linux server with root privileges:
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/zeus-panel/ZEUS-PANEL/main/zeus-relay.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/zeus-panel/ZEUS-PANEL/main/zeus-relay.sh | sed 's/\r$//')
 ```
 
 The script features an interactive menu, automatic port configuration, random secure credential generation (username/password), and native IPv4/IPv6 integration.
