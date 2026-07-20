@@ -96,6 +96,20 @@ First, log into your Cloudflare dashboard. Ensure you are using a verified email
 ---
 
 
+## 🛡️ Build Your Own SOCKS5 Proxy (Zeus Relay)
+
+A dedicated bash script is provided to instantly deploy a private, secure SOCKS5 proxy on any Linux VPS (Ubuntu, Debian, CentOS, Rocky Linux). This is highly recommended for users who wish to create VIP residential proxies to route traffic through clean, dedicated IPs.
+
+To install, update, or remove the Dante SOCKS5 proxy, execute the following command on your Linux server with root privileges:
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/zeus-panel/ZEUS-PANEL/main/zeus-relay.sh)
+```
+
+The script features an interactive menu, automatic port configuration, random secure credential generation (username/password), and native IPv4/IPv6 integration.
+
+---
+
 ## 💰 Donate & Support
 
 <p align="center">Built with ❤️</p>
