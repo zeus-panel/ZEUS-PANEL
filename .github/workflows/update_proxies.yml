@@ -1,0 +1,36 @@
+name: Auto Update Free Proxies
+
+on:
+  schedule:
+    # Runs every 2 hours
+    - cron: '0 */2 * * *'
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  update-proxies:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to push code back to the repo
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Fetch and Test Proxies
+        run: node update_proxies.js
+
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add proxy/*.txt
+          if git diff --staged --quiet; then
+            echo "No proxy changes to commit."
+          else
+            git commit -m "chore: auto-update SOCKS5 proxies"
+            git push
+          fi
