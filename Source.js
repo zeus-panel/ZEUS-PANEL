@@ -20,18 +20,24 @@ const DOWNSTREAM_GRAIN_SILENT_MS = 1;
 const TCP_CONCURRENCY = 2;
 const PRELOAD_RACE_DIAL = true;
 let localLastAutoResetCheck = 0;
-async function checkAutoResets(env) {
+async function checkAutoResets(env, ctx) {
 	const now = Date.now();
 	if (now - localLastAutoResetCheck < 3600000) return;
 	try {
+		const cache = caches.default;
+		const cacheReq = new Request("https://internal.zeus/auto_reset");
+		if (await cache.match(cacheReq)) return;
 		const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'last_auto_reset_check'").first();
 		const dbLastCheck = row ? parseInt(row.value) || 0 : 0;
 		if (now - dbLastCheck < 3600000) {
 			localLastAutoResetCheck = dbLastCheck;
+			const ttl = Math.floor((3600000 - (now - dbLastCheck)) / 1000);
+			if (ttl > 0 && ctx) ctx.waitUntil(cache.put(cacheReq, new Response("1", { headers: { "Cache-Control": `max-age=${ttl}` } })));
 			return;
 		}
 		await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_auto_reset_check', ?)").bind(String(now)).run();
 		localLastAutoResetCheck = now;
+		if (ctx) ctx.waitUntil(cache.put(cacheReq, new Response("1", { headers: { "Cache-Control": "max-age=3600" } })));
 
 		const todayUtc = Math.floor(now / 86400000) * 86400000;
 		await env.DB.prepare(`UPDATE users SET used_gb = 0, is_active = 1, last_reset_vol_time = ? WHERE auto_reset_vol_days > 0 AND ? >= (last_reset_vol_time + (auto_reset_vol_days * 86400000))`).bind(todayUtc, todayUtc).run();
@@ -39,18 +45,24 @@ async function checkAutoResets(env) {
 	} catch (e) {}
 }
 let localLastIpRotateCheck = 0;
-async function checkAutoRotates(env) {
+async function checkAutoRotates(env, ctx) {
 	const now = Date.now();
 	if (now - localLastIpRotateCheck < 60000) return;
 	try {
+		const cache = caches.default;
+		const cacheReq = new Request("https://internal.zeus/auto_rotate");
+		if (await cache.match(cacheReq)) return;
 		const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'last_ip_rotate_check'").first();
 		const dbLastCheck = row ? parseInt(row.value) || 0 : 0;
 		if (now - dbLastCheck < 60000) {
 			localLastIpRotateCheck = dbLastCheck;
+			const ttl = Math.floor((60000 - (now - dbLastCheck)) / 1000);
+			if (ttl > 0 && ctx) ctx.waitUntil(cache.put(cacheReq, new Response("1", { headers: { "Cache-Control": `max-age=${ttl}` } })));
 			return;
 		}
 		await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_ip_rotate_check', ?)").bind(String(now)).run();
 		localLastIpRotateCheck = now;
+		if (ctx) ctx.waitUntil(cache.put(cacheReq, new Response("1", { headers: { "Cache-Control": "max-age=60" } })));
 
 		const { results: usersToRotate } = await env.DB.prepare("SELECT * FROM users WHERE auto_rotate_ip = 1 AND ? >= (last_rotate_time + (rotate_time * 60000))").bind(now).all();
 		if (!usersToRotate || usersToRotate.length === 0) return;
@@ -109,6 +121,105 @@ async function checkAutoRotates(env) {
 }
 let cachedVipCountries = [];
 let lastVipCountriesFetch = 0;
+const CF_IPV4_SUBNETS = [
+	"173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+	"141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+	"197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+	"104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22"
+];
+
+function ipToLong(ip) {
+	return ip.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0;
+}
+
+function isCloudflareIP(ip) {
+	if (!isIPv4(ip)) return false;
+	const targetLong = ipToLong(ip);
+	for (const subnet of CF_IPV4_SUBNETS) {
+		const [range, bits] = subnet.split('/');
+		const mask = ~(Math.pow(2, 32 - parseInt(bits, 10)) - 1) >>> 0;
+		if ((targetLong & mask) === (ipToLong(range) & mask)) return true;
+	}
+	return false;
+}
+
+let cachedSystemVipProxy = null;
+let lastSystemVipCheckTime = 0;
+let isSystemVipChecking = false;
+
+async function ensureSystemVipProxy() {
+	const now = Date.now();
+	if (cachedSystemVipProxy && (now - lastSystemVipCheckTime < 60000)) return cachedSystemVipProxy;
+	if (isSystemVipChecking) return cachedSystemVipProxy;
+	isSystemVipChecking = true;
+	try {
+		if (cachedSystemVipProxy) {
+			try {
+				const payload = new TextEncoder().encode("GET / HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: close\r\n\r\n");
+				const s = await connectProxy(cachedSystemVipProxy, "1.1.1.1", 80, payload);
+				const reader = s.readable.getReader();
+				const res = await reader.read();
+				s.close();
+				if (!res.done && res.value) {
+					lastSystemVipCheckTime = now;
+					isSystemVipChecking = false;
+					return cachedSystemVipProxy;
+				}
+			} catch (e) {}
+			cachedSystemVipProxy = null;
+		}
+		const fallbackVIPs = ["DE", "US", "GB", "NL", "FR", "TR"];
+		for (let i = fallbackVIPs.length - 1; i > 0; i--) {
+			const j = Math.floor(Math.random() * (i + 1));
+			[fallbackVIPs[i], fallbackVIPs[j]] = [fallbackVIPs[j], fallbackVIPs[i]];
+		}
+		for (const fc of fallbackVIPs) {
+			try {
+				const res = await fetch(`https://zeus-files.surge.sh/proxy_vip/${fc}.txt`);
+				if (!res.ok) continue;
+				const text = await res.text();
+				const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 5);
+				if (lines.length === 0) continue;
+				for (let i = lines.length - 1; i > 0; i--) {
+					const j = Math.floor(Math.random() * (i + 1));
+					[lines[i], lines[j]] = [lines[j], lines[i]];
+				}
+				const testBatch = lines.slice(0, 3).map(line => {
+					if (line.match(/^(socks4|socks5|socks|http|https|tg):\/\//i)) return line;
+					return `socks5://${line}`;
+				});
+				try {
+					const working = await Promise.any(testBatch.map(p => {
+						return new Promise(async (resolve, reject) => {
+							const timeoutId = setTimeout(() => reject(new Error('timeout')), 3000);
+							try {
+								const payload = new TextEncoder().encode("GET / HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: close\r\n\r\n");
+								const s = await connectProxy(p, "1.1.1.1", 80, payload);
+								const reader = s.readable.getReader();
+								const res = await reader.read();
+								s.close();
+								clearTimeout(timeoutId);
+								if (res.done || !res.value) reject(new Error("empty"));
+								else resolve(p);
+							} catch (e) {
+								clearTimeout(timeoutId);
+								reject(e);
+							}
+						});
+					}));
+					if (working) {
+						cachedSystemVipProxy = working;
+						lastSystemVipCheckTime = now;
+						break;
+					}
+				} catch (e) {}
+			} catch (e) {}
+		}
+	} finally {
+		isSystemVipChecking = false;
+	}
+	return cachedSystemVipProxy;
+}
 async function replaceBrokenProxy(username, env, oldProxy) {
 	try {
 		if (GLOBAL_WRITE_LOCK.get(username + "_proxy_rotate")) return;
@@ -226,8 +337,8 @@ export default {
 		await DbService.ensureSchema(env.DB);
 		trackRequest(env, ctx);
 		if (schemaEnsured) {
-			ctx.waitUntil(checkAutoResets(env));
-			ctx.waitUntil(checkAutoRotates(env));
+			ctx.waitUntil(checkAutoResets(env, ctx));
+			ctx.waitUntil(checkAutoRotates(env, ctx));
 		}
 		const url = new URL(request.url);
 		if (Router.isWebSocketUpgrade(request)) {
@@ -398,12 +509,23 @@ const Router = {
 			const hashedInput = await DbService.sha256(password);
 			const storedHash = await DbService.getPanelPassword(env.DB);
 
+			let isValid = false;
 			if (storedHash === hashedInput) {
+				isValid = true;
+			} else {
+				const oldHashedInput = await DbService.oldSha256(password);
+				if (storedHash === oldHashedInput) {
+					isValid = true;
+					await DbService.setPanelPassword(env.DB, hashedInput);
+				}
+			}
+
+			if (isValid) {
 				LOGIN_ATTEMPTS.delete(clientIP); 
 				return new Response(JSON.stringify({ success: true }), {
 					headers: {
 						"Content-Type": "application/json; charset=utf-8",
-						"Set-Cookie": "panel_session=" + storedHash + "; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=31536000",
+						"Set-Cookie": "panel_session=" + hashedInput + "; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=31536000",
 					},
 				});
 			} else {
@@ -610,8 +732,10 @@ const Router = {
 				});
 			}
 			const currentHash = await DbService.sha256(current_password);
+			const oldCurrentHash = await DbService.oldSha256(current_password);
 			const storedHash = await DbService.getPanelPassword(env.DB);
-			if (storedHash && storedHash !== currentHash) {
+			
+			if (storedHash && storedHash !== currentHash && storedHash !== oldCurrentHash) {
 				return new Response(JSON.stringify({ error: "رمز عبور فعلی اشتباه است" }), {
 					status: 401,
 					headers: { "Content-Type": "application/json; charset=utf-8" },
@@ -1006,6 +1130,13 @@ const DbService = {
 		return sessionToken === storedPasswordHash;
 	},
 	async sha256(message) {
+		const salt = "ZEUS_PANEL_SECURE_SALT_2026";
+		const msgBuffer = new TextEncoder().encode(message + salt);
+		const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
+		const hashArray = Array.from(new Uint8Array(hashBuffer));
+		return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+	},
+	async oldSha256(message) {
 		const msgBuffer = new TextEncoder().encode(message);
 		const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
 		const hashArray = Array.from(new Uint8Array(hashBuffer));
@@ -1644,33 +1775,25 @@ async function handlevIees(env, storedData = null, ctx = null, request = null) {
 							if (socks5) {
 								try {
 									let targetAddr = addr;
-									
 									if (addrType === 2) {
-										// تلاش اول: استفاده از API مطمئن کلودفلر برای گرفتن IPv4
 										try {
-											const cfDns = await fetch("https://cloudflare-dns.com/dns-query?name=" + addr + "&type=A", {
-												headers: { "Accept": "application/dns-json" }
-											});
-											const cfJson = await cfDns.json();
-											if (cfJson.Status === 0 && cfJson.Answer) {
-												const v4 = cfJson.Answer.find(a => a.type === 1 && isIPv4(a.data));
+											const gDns = await fetch("https://dns.google/resolve?name=" + addr + "&type=A");
+											const gJson = await gDns.json();
+											if (gJson.Status === 0 && gJson.Answer) {
+												const v4 = gJson.Answer.find(a => a.type === 1 && isIPv4(a.data));
 												if (v4) targetAddr = v4.data;
 											}
 										} catch (e) {
-											// تلاش دوم: استفاده از تابع DNS محلی
 											try {
-												const dnsCheck = await dohQuery(addr, "A", targetDoh);
-												const validIps = dnsCheck.filter(r => r.type === 1 && typeof r.data === "string" && isIPv4(r.data));
-												if (validIps.length > 0) targetAddr = validIps[0].data;
+												const cfDns = await fetch("https://cloudflare-dns.com/dns-query?name=" + addr + "&type=A", { headers: { "Accept": "application/dns-json" } });
+												const cfJson = await cfDns.json();
+												if (cfJson.Status === 0 && cfJson.Answer) {
+													const v4 = cfJson.Answer.find(a => a.type === 1 && isIPv4(a.data));
+													if (v4) targetAddr = v4.data;
+												}
 											} catch (e2) {}
 										}
-									} else if (addrType === 3) {
-										// اگه کلاینت مستقیماً آدرس IPv6 فرستاده بود، چون پروکسیِ ما IPv6 نداره هنگ میکنه.
-										// پس همون اول کانکشن رو قطع میکنیم تا مرورگر درجا روی IPv4 تلاش مجدد (Fallback) کنه.
-										serverSock.close();
-										return;
 									}
-									
 									s = await connectProxy(socks5, targetAddr, port, dataPayload);
 								} catch (proxyErr) {
 									if (user.auto_rotate_user_proxy === 1) {
@@ -1681,52 +1804,85 @@ async function handlevIees(env, storedData = null, ctx = null, request = null) {
 									throw proxyErr;
 								}
 							} else {
-							let activeProxyIP = proxyIP;
-							let tryProxyFirst = false;
-							if (user?.user_proxy_ip) {
-								activeProxyIP = user.user_proxy_ip;
-								tryProxyFirst = true;
-							}
-							let fHost = activeProxyIP;
-							let fPort = port;
-							if (activeProxyIP) {
-								if (activeProxyIP.startsWith("[")) {
-									const closeIdx = activeProxyIP.indexOf("]");
-									if (closeIdx !== -1) {
-										fHost = activeProxyIP.substring(1, closeIdx);
-										if (activeProxyIP.length > closeIdx + 1 && activeProxyIP[closeIdx + 1] === ":") {
-											fPort = parseInt(activeProxyIP.substring(closeIdx + 2)) || port;
+								let resolvedIp = addr;
+								if (addrType === 2) {
+									try {
+										const gDns = await fetch("https://dns.google/resolve?name=" + addr + "&type=A");
+										const gJson = await gDns.json();
+										if (gJson.Status === 0 && gJson.Answer) {
+											const v4 = gJson.Answer.find(a => a.type === 1 && isIPv4(a.data));
+											if (v4) resolvedIp = v4.data;
 										}
+									} catch (e) {
+										try {
+											const cfDns = await fetch("https://cloudflare-dns.com/dns-query?name=" + addr + "&type=A", { headers: { "Accept": "application/dns-json" } });
+											const cfJson = await cfDns.json();
+											if (cfJson.Status === 0 && cfJson.Answer) {
+												const v4 = cfJson.Answer.find(a => a.type === 1 && isIPv4(a.data));
+												if (v4) resolvedIp = v4.data;
+											}
+										} catch (e2) {}
+									}
+								}
+								let secretVipProxy = null;
+								if (isCloudflareIP(resolvedIp)) {
+									secretVipProxy = await ensureSystemVipProxy();
+								}
+								if (secretVipProxy) {
+									try {
+										s = await connectProxy(secretVipProxy, resolvedIp, port, dataPayload);
+									} catch (vipErr) {
+										cachedSystemVipProxy = null;
+										throw vipErr;
 									}
 								} else {
-									const lastColon = activeProxyIP.lastIndexOf(":");
-									if (lastColon !== -1 && activeProxyIP.indexOf(":") === lastColon) {
-										fHost = activeProxyIP.substring(0, lastColon);
-										fPort = parseInt(activeProxyIP.substring(lastColon + 1)) || port;
+									let activeProxyIP = proxyIP;
+									let tryProxyFirst = false;
+									if (user?.user_proxy_ip) {
+										activeProxyIP = user.user_proxy_ip;
+										tryProxyFirst = true;
+									}
+									let fHost = activeProxyIP;
+									let fPort = port;
+									if (activeProxyIP) {
+										if (activeProxyIP.startsWith("[")) {
+											const closeIdx = activeProxyIP.indexOf("]");
+											if (closeIdx !== -1) {
+												fHost = activeProxyIP.substring(1, closeIdx);
+												if (activeProxyIP.length > closeIdx + 1 && activeProxyIP[closeIdx + 1] === ":") {
+													fPort = parseInt(activeProxyIP.substring(closeIdx + 2)) || port;
+												}
+											}
+										} else {
+											const lastColon = activeProxyIP.lastIndexOf(":");
+											if (lastColon !== -1 && activeProxyIP.indexOf(":") === lastColon) {
+												fHost = activeProxyIP.substring(0, lastColon);
+												fPort = parseInt(activeProxyIP.substring(lastColon + 1)) || port;
+											} else {
+												fHost = activeProxyIP;
+											}
+										}
+									}
+									const isCustomProxy = tryProxyFirst && activeProxyIP && activeProxyIP !== "";
+									if (isCustomProxy) {
+										try {
+											s = await connectDirect(fHost, fPort, dataPayload, targetDoh);
+										} catch (err) {
+											s = await connectDirect(addr, port, dataPayload, targetDoh);
+										}
 									} else {
-										fHost = activeProxyIP;
+										try {
+											s = await connectDirect(addr, port, dataPayload, targetDoh);
+										} catch (err) {
+											if (useFallback && activeProxyIP) {
+												s = await connectDirect(fHost, fPort, dataPayload, targetDoh);
+											} else {
+												throw err;
+											}
+										}
 									}
 								}
 							}
-							const isCustomProxy = tryProxyFirst && activeProxyIP && activeProxyIP !== "";
-							if (isCustomProxy) {
-								try {
-									s = await connectDirect(fHost, fPort, dataPayload, targetDoh);
-								} catch (err) {
-									s = await connectDirect(addr, port, dataPayload, targetDoh);
-								}
-							} else {
-								try {
-									s = await connectDirect(addr, port, dataPayload, targetDoh);
-								} catch (err) {
-									if (useFallback && activeProxyIP) {
-										s = await connectDirect(fHost, fPort, dataPayload, targetDoh);
-									} else {
-										throw err;
-									}
-								}
-							}
-						}
 						remoteConnWrapper.socket = s;
 						s.closed.catch(() => {}).finally(() => closeSocketQuietly(serverSock));
 						connectStreams(s, serverSock, respHeader, null, (b) => {
@@ -2955,7 +3111,7 @@ const HTML_TEMPLATES = {
                     <span id="panel-version" class="text-xs px-2 py-0.5 font-semibold bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400 rounded-full">v1.5.10</span>
                 </h1>
                 <div class="flex items-center gap-3 bg-gray-100 dark:bg-zinc-800/60 px-3 py-1.5 rounded-full border border-gray-200 dark:border-zinc-800/80 shadow-sm flex-shrink-0 w-fit">
-                    <a href="https://github.com/IR-NETLIFY/zeus" target="_blank" rel="noopener noreferrer" class="text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 transition-all transform hover:scale-125 duration-200 flex-shrink-0" title="GitHub">
+                    <a href="https://github.com/zeus-panel/ZEUS-PANEL" target="_blank" rel="noopener noreferrer" class="text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200 transition-all transform hover:scale-125 duration-200 flex-shrink-0" title="GitHub">
                         <svg class="w-[22px] h-[22px] flex-shrink-0" viewBox="0 0 24 24" fill="currentColor">
                             <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>
                         </svg>
@@ -3418,7 +3574,11 @@ const HTML_TEMPLATES = {
                             </div>
                             <div class="grid grid-cols-2 gap-2 mb-2 w-full">
                                 <button type="button" onclick="toggleDonateModal(true)" class="text-[11px] bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 px-2 py-2 rounded border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition font-black shadow-sm text-center whitespace-nowrap">اهدای پـروکـسـی شخصی ❤️</button>
-                                <a href="https://github.com/IR-NETLIFY/zeus-relay" target="_blank" class="text-[11px] bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-2 py-2 rounded border border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition font-black shadow-sm text-center whitespace-nowrap">ساخت پـروکـسـی شخصی</a>
+                                <a href="https://github.com/zeus-panel/ZEUS-PANEL#%EF%B8%8F-build-your-own-socks5-proxy-zeus-relay" target="_blank" class="text-[11px] bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-2 py-2 rounded border border-blue-200 dark:border-blue-800 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition font-black shadow-sm text-center whitespace-nowrap">ساخت پـروکـسـی شخصی</a>
+                            </div>
+                            <div class="mb-2 p-2 border-2 border-dashed border-red-500 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 rounded-md text-[11px] font-bold leading-relaxed text-center w-full shadow-[0_0_15px_rgba(239,68,68,0.6)]" style="animation: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite, alertShake 2s infinite;">
+                                <style>@keyframes alertShake { 0%, 100% {transform: translateX(0);} 2%, 6%, 10% {transform: translateX(-3px);} 4%, 8%, 12% {transform: translateX(3px);} 14% {transform: translateX(0);} }</style>
+                                سایت‌هایی مثل <span class="text-emerald-600 dark:text-emerald-400 font-black">ChatGPT</span> و <span class="text-amber-600 dark:text-amber-400 font-black">Claude</span> پشت کلودفلر هستند؛ برای باز کردن این سایت‌ها حتماً باید <span class="text-blue-600 dark:text-blue-400 font-black">پـروکـسـی</span> تنظیم کنید.
                             </div>
                             <div class="relative transition-opacity duration-300 opacity-50 pointer-events-none flex-1 flex flex-col justify-start" id="user-socks5-container">
                                 <input type="text" id="user-socks5-input" placeholder="socks5:// یا http:// یا (user:pass@ip:port)" dir="ltr" class="w-full px-3 py-2.5 bg-gray-50 dark:bg-amoled-input border border-gray-200 dark:border-amoled-border rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800 dark:text-zinc-100 transition" disabled>
@@ -3428,9 +3588,6 @@ const HTML_TEMPLATES = {
                                 <div class="mt-2 flex items-center justify-between w-full gap-2">
                                     <button type="button" onclick="testUserSocksProxy()" id="test-user-proxy-btn" class="flex-1 text-center text-[11px] bg-sky-50 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400 py-1.5 rounded border border-sky-200 dark:border-sky-800 hover:bg-sky-100 dark:hover:bg-sky-900/50 transition font-bold shadow-sm">تست پـروکـسـی</button>
                                     <button type="button" onclick="openProxySelectorModal()" class="flex-1 text-center text-[11px] bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 py-1.5 rounded border border-amber-200 dark:border-amber-800 hover:bg-amber-100 dark:hover:bg-amber-900/50 transition font-bold shadow-sm">مخزن پـروکـسـی</button>
-                                </div>
-                                <div class="mt-3 p-2 border-2 border-dashed border-red-400 dark:border-red-500/70 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 rounded-md text-[11px] font-bold leading-relaxed text-center w-full">
-                                        سایت‌هایی مثل <span class="text-emerald-600 dark:text-emerald-400 font-black">ChatGPT</span> و <span class="text-amber-600 dark:text-amber-400 font-black">Claude</span> پشت کلودفلر هستند؛ برای باز کردن این سایت‌ها حتماً باید <span class="text-blue-600 dark:text-blue-400 font-black">پـروکـسـی</span> تنظیم کنید.
                                 </div>
                                 <div class="mt-2 flex items-center justify-between border border-gray-100 dark:border-amoled-border p-3 rounded-md bg-gray-50 dark:bg-amoled-input">
                                     <div class="flex items-center gap-2">
@@ -3612,7 +3769,7 @@ const HTML_TEMPLATES = {
 				<svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
 				بوست تلگرام
 			</a>
-            <a href="https://github.com/IR-NETLIFY/zeus" target="_blank" class="w-full py-3 bg-transparent border-2 border-gray-600 text-gray-700 hover:bg-gray-100 dark:border-gray-500 dark:text-gray-300 dark:hover:bg-zinc-800 font-bold rounded-md text-sm transition duration-300 shadow-sm flex items-center justify-center gap-2">
+            <a href="https://github.com/zeus-panel/ZEUS-PANEL" target="_blank" class="w-full py-3 bg-transparent border-2 border-gray-600 text-gray-700 hover:bg-gray-100 dark:border-gray-500 dark:text-gray-300 dark:hover:bg-zinc-800 font-bold rounded-md text-sm transition duration-300 shadow-sm flex items-center justify-center gap-2">
                 <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
                 ستاره در گیت‌هاب
             </a>
@@ -5351,7 +5508,7 @@ async function testUserSocksProxy() {
                 window.location.reload();
             }
         }
-const CURRENT_VERSION = '1.9.7';
+const CURRENT_VERSION = '1.9.9';
 const UPDATE_FIX = "constsCURRENT_VERSION='d.d.d'";
 		async function checkForUpdates(isManual = false) {
             try {
@@ -5503,12 +5660,14 @@ function applySelectedIps() {
     toggleIpSelectorModal(false);
 }
 document.addEventListener('DOMContentLoaded', () => {
-			const freeModal = document.getElementById('free-panel-warning-modal');
-            const freeCard = freeModal.querySelector('div');
-            freeModal.classList.remove('opacity-0', 'pointer-events-none');
-            freeModal.classList.add('opacity-100', 'pointer-events-auto');
-            freeCard.classList.remove('opacity-0', 'scale-95');
-            freeCard.classList.add('opacity-100', 'scale-100');
+			setTimeout(() => {
+   			 const freeModal = document.getElementById('free-panel-warning-modal');
+    			const freeCard = freeModal.querySelector('div');
+    			freeModal.classList.remove('opacity-0', 'pointer-events-none');
+    			freeModal.classList.add('opacity-100', 'pointer-events-auto');
+    			freeCard.classList.remove('opacity-0', 'scale-95');
+    			freeCard.classList.add('opacity-100', 'scale-100');
+			}, 3000);
             const versionBadge = document.getElementById('panel-version');
             if (versionBadge) versionBadge.innerText = 'v' + CURRENT_VERSION;
             renderPortCheckboxes();
@@ -5534,9 +5693,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 selectEl.value = String(initialRate);
             }
             window.startRefreshInterval(initialRate);
-			setTimeout(() => checkForUpdates(false), 2000);
+			setTimeout(() => checkForUpdates(false), 1000);
             setInterval(() => checkForUpdates(false), 60000);
-            setTimeout(() => checkGlobalMessage(), 1000);
+            setTimeout(() => checkGlobalMessage(), 50);
             setInterval(() => checkGlobalMessage(), 60000);
             window.addEventListener('mousedown', (e) => {
                 window._modalMouseDownTarget = e.target;
@@ -6008,6 +6167,56 @@ window.addEventListener('click', (e) => {
                 </button>
             </div>
         </div>
+
+        <div class="border-t border-gray-100 dark:border-zinc-800 pt-6 mt-6 relative z-10 w-full">
+            <h2 class="text-sm font-bold mb-4 flex items-center gap-2">
+                <svg class="w-4 h-4 text-pink-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                دانلود نرم افزار ها
+            </h2>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <!-- Android -->
+                <div class="bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200/50 dark:border-emerald-800/30 rounded-md p-2.5">
+                    <div class="flex items-center gap-1.5 mb-2.5 text-emerald-700 dark:text-emerald-500 font-bold text-[11px]">
+                        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M17.523 15.3414c-.5511 0-.9993-.4486-.9993-.9997s.4482-.9993.9993-.9993c.5511 0 .9993.4482.9993.9993.0004.5511-.4482.9997-.9993.9997m-11.046 0c-.5511 0-.9993-.4486-.9993-.9997s.4482-.9993.9993-.9993c.5511 0 .9993.4482.9993.9993 0 .5511-.4482.9997-.9993.9997m11.4045-6.02L19.695 6.183c.1568-.2716.0637-.6182-.2079-.7754-.2716-.1564-.6183-.0633-.775.2082l-1.8584 3.2185c-1.3853-.6328-2.9697-.9881-4.6644-.9881-1.6946 0-3.279.3553-4.664.9881L5.6664 5.6158c-.1567-.2715-.5038-.3646-.775-.2082-.2716.1572-.3647.5038-.2079.7754l1.8136 3.1385C2.963 11.2384 1.1571 14.5422 1 18.4234h22c-.1572-3.8812-1.963-7.185-5.4955-9.102"/></svg>
+                        اندروید
+                    </div>
+                    <div class="flex flex-col gap-1.5">
+                        <a href="https://github.com/2dust/v2rayNG/releases/latest" target="_blank" class="flex justify-between items-center bg-white dark:bg-amoled-card border border-gray-100 dark:border-zinc-800 px-2 py-1.5 rounded text-[10px] font-semibold text-gray-700 dark:text-zinc-300 hover:border-emerald-400 dark:hover:border-emerald-500 transition shadow-sm"><span>v2rayNG</span><span class="text-emerald-500 text-[12px]">📥</span></a>
+                        <a href="https://github.com/Happ-proxy/happ-android/releases/latest/download/Happ.apk" target="_blank" class="flex justify-between items-center bg-white dark:bg-amoled-card border border-gray-100 dark:border-zinc-800 px-2 py-1.5 rounded text-[10px] font-semibold text-gray-700 dark:text-zinc-300 hover:border-emerald-400 dark:hover:border-emerald-500 transition shadow-sm"><span>happ</span><span class="text-emerald-500 text-[12px]">📥</span></a>
+                        <a href="https://github.com/hiddify/hiddify-app/releases/latest/download/Hiddify-Android-universal.apk" target="_blank" class="flex justify-between items-center bg-white dark:bg-amoled-card border border-gray-100 dark:border-zinc-800 px-2 py-1.5 rounded text-[10px] font-semibold text-gray-700 dark:text-zinc-300 hover:border-emerald-400 dark:hover:border-emerald-500 transition shadow-sm"><span>Hiddify</span><span class="text-emerald-500 text-[12px]">📥</span></a>
+                        <a href="https://play.google.com/store/apps/details?id=com.napsternetlabs.napsternetv" target="_blank" class="flex justify-between items-center bg-white dark:bg-amoled-card border border-gray-100 dark:border-zinc-800 px-2 py-1.5 rounded text-[10px] font-semibold text-gray-700 dark:text-zinc-300 hover:border-emerald-400 dark:hover:border-emerald-500 transition shadow-sm"><span>Npv Tunnel</span><span class="text-emerald-500 text-[12px]">📥</span></a>
+						<a href="https://play.google.com/store/apps/details?id=dev.hexasoftware.v2box" target="_blank" class="flex justify-between items-center bg-white dark:bg-amoled-card border border-gray-100 dark:border-zinc-800 px-2 py-1.5 rounded text-[10px] font-semibold text-gray-700 dark:text-zinc-300 hover:border-emerald-400 dark:hover:border-emerald-500 transition shadow-sm"><span>V2Box</span><span class="text-emerald-500 text-[12px]">📥</span></a>
+					</div>
+                </div>
+                <!-- Windows -->
+                <div class="bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200/50 dark:border-blue-800/30 rounded-md p-2.5">
+                    <div class="flex items-center gap-1.5 mb-2.5 text-blue-700 dark:text-blue-500 font-bold text-[11px]">
+                        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-13.051-1.801"/></svg>
+                        ویندوز
+                    </div>
+                    <div class="flex flex-col gap-1.5">
+                        <a href="https://github.com/2dust/v2rayN/releases/latest/download/v2rayN-windows-64.zip" target="_blank" class="flex justify-between items-center bg-white dark:bg-amoled-card border border-gray-100 dark:border-zinc-800 px-2 py-1.5 rounded text-[10px] font-semibold text-gray-700 dark:text-zinc-300 hover:border-blue-400 dark:hover:border-blue-500 transition shadow-sm"><span>v2rayN</span><span class="text-blue-500 text-[12px]">📥</span></a>
+                        <a href="https://github.com/Happ-proxy/happ-desktop/releases/latest/download/setup-Happ.x64.exe" target="_blank" class="flex justify-between items-center bg-white dark:bg-amoled-card border border-gray-100 dark:border-zinc-800 px-2 py-1.5 rounded text-[10px] font-semibold text-gray-700 dark:text-zinc-300 hover:border-blue-400 dark:hover:border-blue-500 transition shadow-sm"><span>happ</span><span class="text-blue-500 text-[12px]">📥</span></a>
+                        <a href="https://github.com/hiddify/hiddify-app/releases/latest/download/Hiddify-Windows-Setup-x64.exe" target="_blank" class="flex justify-between items-center bg-white dark:bg-amoled-card border border-gray-100 dark:border-zinc-800 px-2 py-1.5 rounded text-[10px] font-semibold text-gray-700 dark:text-zinc-300 hover:border-blue-400 dark:hover:border-blue-500 transition shadow-sm"><span>Hiddify</span><span class="text-blue-500 text-[12px]">📥</span></a>
+						<a href="https://github.com/KaringX/karing/releases/latest" target="_blank" class="flex justify-between items-center bg-white dark:bg-amoled-card border border-gray-100 dark:border-zinc-800 px-2 py-1.5 rounded text-[10px] font-semibold text-gray-700 dark:text-zinc-300 hover:border-blue-400 dark:hover:border-blue-500 transition shadow-sm"><span>Karing</span><span class="text-blue-500 text-[12px]">📥</span></a>
+                    </div>
+                </div>
+                <!-- iOS -->
+                <div class="bg-gray-50/50 dark:bg-zinc-800/30 border border-gray-200/50 dark:border-gray-700/50 rounded-md p-2.5">
+                    <div class="flex items-center gap-1.5 mb-2.5 text-gray-700 dark:text-gray-300 font-bold text-[11px]">
+                        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.05 2.95.72 3.88 1.84-3.46 2.06-2.89 6.18.54 7.42-.85 1.58-1.54 2.82-3.07 3.75zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
+                        آیفون
+                    </div>
+                    <div class="flex flex-col gap-1.5">
+						<a href="https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690" target="_blank" class="flex justify-between items-center bg-white dark:bg-amoled-card border border-gray-100 dark:border-zinc-800 px-2 py-1.5 rounded text-[10px] font-semibold text-gray-700 dark:text-zinc-300 hover:border-gray-400 dark:hover:border-gray-500 transition shadow-sm"><span>V2Box</span><span class="text-gray-500 text-[12px]">📥</span></a>
+                        <a href="https://apps.apple.com/us/app/streisand/id6450534064" target="_blank" class="flex justify-between items-center bg-white dark:bg-amoled-card border border-gray-100 dark:border-zinc-800 px-2 py-1.5 rounded text-[10px] font-semibold text-gray-700 dark:text-zinc-300 hover:border-gray-400 dark:hover:border-gray-500 transition shadow-sm"><span>Streisand</span><span class="text-gray-500 text-[12px]">📥</span></a>
+                        <a href="https://apps.apple.com/us/app/npv-tunnel/id1629465476" target="_blank" class="flex justify-between items-center bg-white dark:bg-amoled-card border border-gray-100 dark:border-zinc-800 px-2 py-1.5 rounded text-[10px] font-semibold text-gray-700 dark:text-zinc-300 hover:border-gray-400 dark:hover:border-gray-500 transition shadow-sm"><span>NapsternetV</span><span class="text-gray-500 text-[12px]">📥</span></a>
+                        <a href="https://apps.apple.com/us/app/happ-proxy-utility/id6504287215" target="_blank" class="flex justify-between items-center bg-white dark:bg-amoled-card border border-gray-100 dark:border-zinc-800 px-2 py-1.5 rounded text-[10px] font-semibold text-gray-700 dark:text-zinc-300 hover:border-gray-400 dark:hover:border-gray-500 transition shadow-sm"><span>happ</span><span class="text-gray-500 text-[12px]">📥</span></a>
+                        <a href="https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532" target="_blank" class="flex justify-between items-center bg-white dark:bg-amoled-card border border-gray-100 dark:border-zinc-800 px-2 py-1.5 rounded text-[10px] font-semibold text-gray-700 dark:text-zinc-300 hover:border-gray-400 dark:hover:border-gray-500 transition shadow-sm"><span>Hiddify</span><span class="text-gray-500 text-[12px]">📥</span></a>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 <div id="qr-modal" class="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/70 opacity-0 pointer-events-none transition-opacity duration-200 ease-out">
     <div id="qr-modal-card" class="w-full max-w-sm bg-white dark:bg-amoled-card border border-gray-200 dark:border-amoled-border rounded-md shadow-2xl p-6 transform transition-all scale-95 opacity-0 duration-200 text-center">
@@ -6024,7 +6233,7 @@ window.addEventListener('click', (e) => {
 </div>
 <div class="flex flex-col gap-4 mt-6 z-10">
     <div class="flex flex-wrap items-center gap-3 sm:gap-4 justify-center">
-        <a href="https://github.com/IR-NETLIFY/zeus" target="_blank" class="flex items-center gap-2 px-4 py-2 bg-white dark:bg-amoled-card border border-gray-200 dark:border-amoled-border rounded-full shadow-sm hover:shadow-md transition text-sm font-bold text-gray-700 dark:text-zinc-300 hover:text-black dark:hover:text-white group">
+        <a href="https://github.com/zeus-panel/ZEUS-PANEL" target="_blank" class="flex items-center gap-2 px-4 py-2 bg-white dark:bg-amoled-card border border-gray-200 dark:border-amoled-border rounded-full shadow-sm hover:shadow-md transition text-sm font-bold text-gray-700 dark:text-zinc-300 hover:text-black dark:hover:text-white group">
             <svg class="w-5 h-5 group-hover:scale-110 transition" viewBox="0 0 24 24" fill="currentColor">
                 <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.87 8.17 6.84 9.5.5.08.66-.23.66-.5v-1.69c-2.77.6-3.36-1.34-3.36-1.34-.46-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.87 1.52 2.34 1.07 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.92 0-1.11.38-2 1.03-2.71-.1-.25-.45-1.29.1-2.64 0 0 .84-.27 2.75 1.02.79-.22 1.65-.33 2.5-.33.85 0 1.71.11 2.5.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.35.2 2.39.1 2.64.65.71 1.03 1.6 1.03 2.71 0 3.82-2.34 4.66-4.57 4.91.36.31.69.92.69 1.85V21c0 .27.16.59.67.5C19.14 20.16 22 16.42 22 12A10 10 0 0012 2z"/>
             </svg>
