@@ -19,6 +19,17 @@ const DOWNSTREAM_GRAIN_TAIL_THRESHOLD = 512;
 const DOWNSTREAM_GRAIN_SILENT_MS = 1;
 const TCP_CONCURRENCY = 2;
 const PRELOAD_RACE_DIAL = true;
+
+async function fetchWithFallback(path, options = {}) {
+	const githubUrl = `https://raw.githubusercontent.com/zeus-panel/ZEUS-PANEL/main/${path}`;
+	const staticUrl = `https://zeus-files.surge.sh/${path}`;
+	try {
+		const res = await fetch(githubUrl, options);
+		if (res.ok) return res;
+	} catch (e) {}
+	return await fetch(staticUrl, options);
+}
+
 let localLastAutoResetCheck = 0;
 async function checkAutoResets(env, ctx) {
 	const now = Date.now();
@@ -66,7 +77,7 @@ async function checkAutoRotates(env, ctx) {
 
 		const { results: usersToRotate } = await env.DB.prepare("SELECT * FROM users WHERE auto_rotate_ip = 1 AND ? >= (last_rotate_time + (rotate_time * 60000))").bind(now).all();
 		if (!usersToRotate || usersToRotate.length === 0) return;
-		const res = await fetch("https://zeus-files.surge.sh/ips.txt");
+		const res = await fetchWithFallback("ips.txt");
 		if (!res.ok) return;
 		const text = await res.text();
 		const blocks = text.split("----------");
@@ -175,7 +186,7 @@ async function ensureSystemVipProxy() {
 		}
 		for (const fc of fallbackVIPs) {
 			try {
-				const res = await fetch(`https://zeus-files.surge.sh/proxy_vip/${fc}.txt`);
+				const res = await fetchWithFallback(`proxy_vip/${fc}.txt`);
 				if (!res.ok) continue;
 				const text = await res.text();
 				const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 5);
@@ -245,7 +256,7 @@ async function replaceBrokenProxy(username, env, oldProxy) {
 		const isOldProxyVIP = oldProxy.includes("@");
 		if (cachedVipCountries.length === 0 || Date.now() - lastVipCountriesFetch > 3600000) {
 			try {
-				const ghRes = await fetch("https://zeus-files.surge.sh/vip-list", {
+				const ghRes = await fetchWithFallback("vip-list", {
 					headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" }
 				});
 				if (ghRes.ok) {
@@ -261,22 +272,22 @@ async function replaceBrokenProxy(username, env, oldProxy) {
 			[fallbackVIPs[i], fallbackVIPs[j]] = [fallbackVIPs[j], fallbackVIPs[i]];
 		}
 		if (upperCountry !== "ALL" && upperCountry !== "UN") {
-			sources.push({ url: `https://zeus-files.surge.sh/proxy_vip/${upperCountry}.txt`, type: 'repo' });
+			sources.push({ url: `proxy_vip/${upperCountry}.txt`, type: 'repo' });
 		}
 		for (const fc of fallbackVIPs) {
 			if (fc !== upperCountry) {
-				sources.push({ url: `https://zeus-files.surge.sh/proxy_vip/${fc}.txt`, type: 'repo' });
+				sources.push({ url: `proxy_vip/${fc}.txt`, type: 'repo' });
 			}
 		}
 		if (!isOldProxyVIP) {
 			if (upperCountry !== "ALL" && upperCountry !== "UN") {
-				sources.push({ url: `https://zeus-files.surge.sh/proxy/${upperCountry}.txt`, type: 'repo' });
+				sources.push({ url: `proxy/${upperCountry}.txt`, type: 'repo' });
 			}
-			sources.push({ url: `https://zeus-files.surge.sh/proxy/ALL.txt`, type: 'repo' });
+			sources.push({ url: `proxy/ALL.txt`, type: 'repo' });
 		}
 		for (const src of sources) {
 			try {
-				const res = await fetch(src.url);
+				const res = await fetchWithFallback(src.url);
 				if (!res.ok) continue;
 				const text = await res.text();
 				const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 5);
@@ -3964,6 +3975,16 @@ ${COMMON_TOAST_HTML}
     </div>
 </div>
     <script>
+		async function fetchWithFallbackUI(path, options = {}) {
+			const githubUrl = 'https://raw.githubusercontent.com/zeus-panel/ZEUS-PANEL/main/' + path;
+			const staticUrl = 'https://zeus-files.surge.sh/' + path;
+			try {
+				const res = await fetch(githubUrl, options);
+				if (res.ok) return res;
+			} catch (e) {}
+			return await fetch(staticUrl, options);
+		}
+
 		function showToast(message, type = 'success') {
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
@@ -5508,7 +5529,7 @@ async function testUserSocksProxy() {
                 window.location.reload();
             }
         }
-const CURRENT_VERSION = '1.9.9';
+const CURRENT_VERSION = '1.9.10';
 const UPDATE_FIX = "constsCURRENT_VERSION='d.d.d'";
 		async function checkForUpdates(isManual = false) {
             try {
@@ -5561,7 +5582,7 @@ const UPDATE_FIX = "constsCURRENT_VERSION='d.d.d'";
 let cachedIpsData = {};
 async function fetchIpsList() {
     try {
-        const response = await fetch('https://zeus-files.surge.sh/ips.txt');
+        const response = await fetchWithFallbackUI('ips.txt');
         if (!response.ok) throw new Error('Fetch failed');
         const text = await response.text();
         const blocks = text.split('----------');
@@ -5726,7 +5747,7 @@ function toggleProxySelectorModal(show) { setModalState('proxy-selector-modal', 
 			const btn = document.getElementById('vip-fetch-btn');
 			select.innerHTML = '<option value="">در حال بررسی مخزن...</option>';
 			try {
-				const res = await fetch('https://zeus-files.surge.sh/vip-list');
+				const res = await fetchWithFallbackUI('vip-list');
 				if (!res.ok) throw new Error('API Error');
 				const data = await res.json();
 				const validCountries = data
@@ -5755,8 +5776,7 @@ function toggleProxySelectorModal(show) { setModalState('proxy-selector-modal', 
 			btn.disabled = true;
 			btn.innerText = '...';
 			try {
-				const url = 'https://zeus-files.surge.sh/proxy_vip/' + country + '.txt?t=' + Date.now();
-				const res = await fetch(url);
+				const res = await fetchWithFallbackUI('proxy_vip/' + country + '.txt?t=' + Date.now());
 				if (!res.ok) throw new Error('فایل یافت نشد');
 				const text = await res.text();
 				const lines = text.split('\\n').map(function(l) { return l.trim(); }).filter(function(l) { return l.length > 5; });
@@ -5835,10 +5855,10 @@ async function fetchAndLoadProxy() {
     fetchBtn.disabled = true;
     try {
         const sources = [
-            { url: "https://zeus-files.surge.sh/proxy/" + country.toUpperCase() + ".txt", prefix: "" }
+            { url: "proxy/" + country.toUpperCase() + ".txt", prefix: "" }
         ];
         const responses = await Promise.allSettled(sources.map(src => 
-            fetch(src.url).then(async res => {
+            fetchWithFallbackUI(src.url).then(async res => {
                 if (!res.ok) throw new Error();
                 const text = await res.text();
                 return { text: text, prefix: src.prefix };
