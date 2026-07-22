@@ -2,10 +2,7 @@
   {"name": "CA.txt"},
   {"name": "DE.txt"},
   {"name": "FR.txt"},
-  {"name": "GB.txt"},
   {"name": "IT.txt"},
   {"name": "KR.txt"},
-  {"name": "LV.txt"},
-  {"name": "SE.txt"},
-  {"name": "TR.txt"}
+  {"name": "SE.txt"}
 ]
