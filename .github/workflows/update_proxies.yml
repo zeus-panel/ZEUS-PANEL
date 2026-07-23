@@ -2,8 +2,8 @@ name: Auto Update Free Proxies
 
 on:
   schedule:
-    # Runs every 2 hours
-    - cron: '17 */2 * * *'
+    # Runs every 2 hours at minute 23 (UTC)
+    - cron: '23 */2 * * *'
   workflow_dispatch: # Allows manual trigger
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Fetch and Test Proxies
         run: node update_proxies.js
@@ -31,6 +31,6 @@ jobs:
           if git diff --staged --quiet; then
             echo "No proxy changes to commit."
           else
-            git commit -m "chore: auto-update SOCKS5 proxies"
+            git commit -m "chore: auto-update proxies [skip ci]"
             git push
           fi
