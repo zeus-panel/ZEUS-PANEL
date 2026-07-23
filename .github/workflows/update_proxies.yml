@@ -1,9 +1,6 @@
 name: Auto Update Free Proxies
 
 on:
-  schedule:
-    # Runs every 2 hours at minute 23 (UTC)
-    - cron: '23 */2 * * *'
   workflow_dispatch: # Allows manual trigger
 
 jobs:
