@@ -18,7 +18,7 @@ const DOWNSTREAM_GRAIN_BYTES = 32 * 1024;
 const DOWNSTREAM_GRAIN_TAIL_THRESHOLD = 512;
 const DOWNSTREAM_GRAIN_SILENT_MS = 1;
 const TCP_CONCURRENCY = 2;
-const PRELOAD_RACE_DIAL = true;
+const PRELOAD_RACE_DIAL = false;
 
 async function fetchWithFallback(path, options = {}) {
 	const githubUrl = `https://raw.githubusercontent.com/zeus-panel/ZEUS-PANEL/main/${path}`;
@@ -132,105 +132,7 @@ async function checkAutoRotates(env, ctx) {
 }
 let cachedVipCountries = [];
 let lastVipCountriesFetch = 0;
-const CF_IPV4_SUBNETS = [
-	"173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
-	"141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
-	"197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
-	"104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22"
-];
 
-function ipToLong(ip) {
-	return ip.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0;
-}
-
-function isCloudflareIP(ip) {
-	if (!isIPv4(ip)) return false;
-	const targetLong = ipToLong(ip);
-	for (const subnet of CF_IPV4_SUBNETS) {
-		const [range, bits] = subnet.split('/');
-		const mask = ~(Math.pow(2, 32 - parseInt(bits, 10)) - 1) >>> 0;
-		if ((targetLong & mask) === (ipToLong(range) & mask)) return true;
-	}
-	return false;
-}
-
-let cachedSystemVipProxy = null;
-let lastSystemVipCheckTime = 0;
-let isSystemVipChecking = false;
-
-async function ensureSystemVipProxy() {
-	const now = Date.now();
-	if (cachedSystemVipProxy && (now - lastSystemVipCheckTime < 60000)) return cachedSystemVipProxy;
-	if (isSystemVipChecking) return cachedSystemVipProxy;
-	isSystemVipChecking = true;
-	try {
-		if (cachedSystemVipProxy) {
-			try {
-				const payload = new TextEncoder().encode("GET / HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: close\r\n\r\n");
-				const s = await connectProxy(cachedSystemVipProxy, "1.1.1.1", 80, payload);
-				const reader = s.readable.getReader();
-				const res = await reader.read();
-				s.close();
-				if (!res.done && res.value) {
-					lastSystemVipCheckTime = now;
-					isSystemVipChecking = false;
-					return cachedSystemVipProxy;
-				}
-			} catch (e) {}
-			cachedSystemVipProxy = null;
-		}
-		const fallbackVIPs = ["DE", "US", "GB", "NL", "FR", "TR"];
-		for (let i = fallbackVIPs.length - 1; i > 0; i--) {
-			const j = Math.floor(Math.random() * (i + 1));
-			[fallbackVIPs[i], fallbackVIPs[j]] = [fallbackVIPs[j], fallbackVIPs[i]];
-		}
-		for (const fc of fallbackVIPs) {
-			try {
-				const res = await fetchWithFallback(`proxy_vip/${fc}.txt`);
-				if (!res.ok) continue;
-				const text = await res.text();
-				const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 5);
-				if (lines.length === 0) continue;
-				for (let i = lines.length - 1; i > 0; i--) {
-					const j = Math.floor(Math.random() * (i + 1));
-					[lines[i], lines[j]] = [lines[j], lines[i]];
-				}
-				const testBatch = lines.slice(0, 3).map(line => {
-					if (line.match(/^(socks4|socks5|socks|http|https|tg):\/\//i)) return line;
-					return `socks5://${line}`;
-				});
-				try {
-					const working = await Promise.any(testBatch.map(p => {
-						return new Promise(async (resolve, reject) => {
-							const timeoutId = setTimeout(() => reject(new Error('timeout')), 3000);
-							try {
-								const payload = new TextEncoder().encode("GET / HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: close\r\n\r\n");
-								const s = await connectProxy(p, "1.1.1.1", 80, payload);
-								const reader = s.readable.getReader();
-								const res = await reader.read();
-								s.close();
-								clearTimeout(timeoutId);
-								if (res.done || !res.value) reject(new Error("empty"));
-								else resolve(p);
-							} catch (e) {
-								clearTimeout(timeoutId);
-								reject(e);
-							}
-						});
-					}));
-					if (working) {
-						cachedSystemVipProxy = working;
-						lastSystemVipCheckTime = now;
-						break;
-					}
-				} catch (e) {}
-			} catch (e) {}
-		}
-	} finally {
-		isSystemVipChecking = false;
-	}
-	return cachedSystemVipProxy;
-}
 async function replaceBrokenProxy(username, env, oldProxy) {
 	try {
 		if (GLOBAL_WRITE_LOCK.get(username + "_proxy_rotate")) return;
@@ -358,7 +260,7 @@ export default {
 		if (Router.isSubscriptionPath(url.pathname)) {
 			return await Router.handleSubscription(url, env);
 		}
-		if (url.pathname.startsWith("/api/") || url.pathname === "/locations") {
+		if (url.pathname.startsWith("/api/")) {
 			return await Router.handleApi(request, url, env, ctx);
 		}
 		if (url.pathname === "/panel" || url.pathname === "/login") {
@@ -382,20 +284,7 @@ const Router = {
 	},
 	async handleWebSocket(request, env, ctx) {
 		try {
-			let proxyIP = "";
-			let socks5 = "";
-			try {
-				const proxyRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'proxy_ip'").first();
-				if (proxyRow && proxyRow.value) {
-					proxyIP = proxyRow.value;
-				}
-				const socksRow = await env.DB.prepare("SELECT value FROM settings WHERE key = 'socks5'").first();
-				if (socksRow && socksRow.value) {
-					socks5 = socksRow.value;
-				}
-			} catch (e) {}
-			const mockStoredData = { proxy_ip: proxyIP, socks5: socks5 };
-			return handlevIees(env, mockStoredData, ctx, request);
+			return handlevIees(env, null, ctx, request);
 		} catch (e) {
 			return new Response("Internal Server Error", { status: 500 });
 		}
@@ -766,19 +655,6 @@ const Router = {
 					"Set-Cookie": "panel_session=" + newHash + "; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=31536000",
 				},
 			});
-		}
-		if (url.pathname === "/locations") {
-			try {
-				const response = await fetch("https://speed.cloudflare.com/locations", {
-					headers: { Referer: "https://speed.cloudflare.com/" },
-				});
-				const data = await response.json();
-				return new Response(JSON.stringify(data), {
-					headers: { "Content-Type": "application/json; charset=utf-8", "Access-Control-Allow-Origin": "*" },
-				});
-			} catch (e) {
-				return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: { "Content-Type": "application/json" } });
-			}
 		}
 		if (url.pathname === "/api/settings/bulk") {
 			if (request.method === "GET") {
@@ -1214,23 +1090,7 @@ const SubscriptionService = {
 		const infoRemark = "📊 remaining | \u200E" + remVol + " | \u200E" + remTime + " | \u200E" + remReq;
 		links.push("vl" + "e" + "ss://" + user.uuid + "@" + host + ":80?path=" + dynPath + "&security=none&encryption=none&host=" + host + "&fp=" + fp + "&type=ws#" + encodeURIComponent(infoRemark));
 		let countryCode = "";
-		if (user.user_proxy_iata) {
-			try {
-				if (!CACHED_CF_LOCATIONS || Date.now() - CACHED_CF_LOCATIONS_TIME > 86400000) {
-					const res = await fetch("https://speed.cloudflare.com/locations", {
-						headers: { Referer: "https://speed.cloudflare.com/" },
-					});
-					if (res.ok) {
-						CACHED_CF_LOCATIONS = await res.json();
-						CACHED_CF_LOCATIONS_TIME = Date.now();
-					}
-				}
-				if (CACHED_CF_LOCATIONS) {
-					const found = CACHED_CF_LOCATIONS.find((l) => l.iata && l.iata.toUpperCase() === user.user_proxy_iata.toUpperCase());
-					if (found && found.cca2) countryCode = found.cca2;
-				}
-			} catch (e) {}
-		} else if (user.user_socks5 || user.user_proxy_ip) {
+		if (user.user_socks5 || user.user_proxy_ip) {
 			let proxy = user.user_socks5 || user.user_proxy_ip;
 			let ip = "";
 			let cleanProxy = proxy.replace(/^(socks4|socks5|socks|http|https):\/\//i, "");
@@ -1593,7 +1453,15 @@ async function handlevIees(env, storedData = null, ctx = null, request = null) {
 			await forwardvIeesUDP(chunk, serverSock, null, addBytes, targetDns);
 			return;
 		}
-		if (await writeToRemote(chunk)) return;
+
+		if (isHeaderParsed) {
+			if (remoteConnWrapper.connectingPromise) {
+				await remoteConnWrapper.connectingPromise;
+			}
+			await writeToRemote(chunk);
+			return;
+		}
+
 		if (!isHeaderParsed) {
 			chunkBuffer = concatBytes(chunkBuffer, chunk);
 			if (chunkBuffer.byteLength < 24) return;
@@ -1756,6 +1624,10 @@ async function handlevIees(env, storedData = null, ctx = null, request = null) {
 							serverSock.close();
 							return;
 						}
+						const resolvedRecord = dnsCheck.find((r) => r.type === 1 || r.type === 28);
+						if (resolvedRecord && resolvedRecord.data) {
+							addr = resolvedRecord.data;
+						}
 					} catch (e) {}
 				}
 				if (cmd === 2) {
@@ -1781,27 +1653,7 @@ async function handlevIees(env, storedData = null, ctx = null, request = null) {
 							const socks5 = user?.user_socks5 || "";
 							if (socks5) {
 								try {
-									let targetAddr = addr;
-									if (addrType === 2) {
-										try {
-											const gDns = await fetch("https://dns.google/resolve?name=" + addr + "&type=A");
-											const gJson = await gDns.json();
-											if (gJson.Status === 0 && gJson.Answer) {
-												const v4 = gJson.Answer.find(a => a.type === 1 && isIPv4(a.data));
-												if (v4) targetAddr = v4.data;
-											}
-										} catch (e) {
-											try {
-												const cfDns = await fetch("https://cloudflare-dns.com/dns-query?name=" + addr + "&type=A", { headers: { "Accept": "application/dns-json" } });
-												const cfJson = await cfDns.json();
-												if (cfJson.Status === 0 && cfJson.Answer) {
-													const v4 = cfJson.Answer.find(a => a.type === 1 && isIPv4(a.data));
-													if (v4) targetAddr = v4.data;
-												}
-											} catch (e2) {}
-										}
-									}
-									s = await connectProxy(socks5, targetAddr, port, dataPayload);
+									s = await connectProxy(socks5, addr, port, dataPayload);
 								} catch (proxyErr) {
 									if (user.auto_rotate_user_proxy === 1) {
 										const replaceTask = replaceBrokenProxy(user.username, env, socks5);
@@ -1811,91 +1663,7 @@ async function handlevIees(env, storedData = null, ctx = null, request = null) {
 									throw proxyErr;
 								}
 							} else {
-								let resolvedIp = addr;
-								if (addrType === 2) {
-									try {
-										const gDns = await fetch("https://dns.google/resolve?name=" + addr + "&type=A");
-										const gJson = await gDns.json();
-										if (gJson.Status === 0 && gJson.Answer) {
-											const v4 = gJson.Answer.find(a => a.type === 1 && isIPv4(a.data));
-											if (v4) resolvedIp = v4.data;
-										}
-									} catch (e) {
-										try {
-											const cfDns = await fetch("https://cloudflare-dns.com/dns-query?name=" + addr + "&type=A", { headers: { "Accept": "application/dns-json" } });
-											const cfJson = await cfDns.json();
-											if (cfJson.Status === 0 && cfJson.Answer) {
-												const v4 = cfJson.Answer.find(a => a.type === 1 && isIPv4(a.data));
-												if (v4) resolvedIp = v4.data;
-											}
-										} catch (e2) {}
-									}
-								}
-								let activeProxyIP = proxyIP;
-								let tryProxyFirst = false;
-								if (user?.user_proxy_ip) {
-									activeProxyIP = user.user_proxy_ip;
-									tryProxyFirst = true;
-								}
-								let fHost = activeProxyIP;
-								let fPort = port;
-								if (activeProxyIP) {
-									if (activeProxyIP.startsWith("[")) {
-										const closeIdx = activeProxyIP.indexOf("]");
-										if (closeIdx !== -1) {
-											fHost = activeProxyIP.substring(1, closeIdx);
-											if (activeProxyIP.length > closeIdx + 1 && activeProxyIP[closeIdx + 1] === ":") {
-												fPort = parseInt(activeProxyIP.substring(closeIdx + 2)) || port;
-											}
-										}
-									} else {
-										const lastColon = activeProxyIP.lastIndexOf(":");
-										if (lastColon !== -1 && activeProxyIP.indexOf(":") === lastColon) {
-											fHost = activeProxyIP.substring(0, lastColon);
-											fPort = parseInt(activeProxyIP.substring(lastColon + 1)) || port;
-										} else {
-											fHost = activeProxyIP;
-										}
-									}
-								}
-								const isCustomProxy = tryProxyFirst && activeProxyIP && activeProxyIP !== "";
-								const isCfIp = isCloudflareIP(resolvedIp);
-								let secretVipProxy = null;
-								if (isCfIp) {
-									secretVipProxy = await ensureSystemVipProxy();
-								}
-								let vipSuccess = false;
-								if (secretVipProxy) {
-									try {
-										s = await connectProxy(secretVipProxy, resolvedIp, port, dataPayload);
-										vipSuccess = true;
-									} catch (vipErr) {
-										cachedSystemVipProxy = null;
-									}
-								}
-								if (!vipSuccess) {
-									if (isCfIp || isCustomProxy) {
-										try {
-											s = await connectDirect(fHost, fPort, dataPayload, targetDoh);
-										} catch (err) {
-											if (isCustomProxy && !isCfIp) {
-												s = await connectDirect(addr, port, dataPayload, targetDoh);
-											} else {
-												throw err;
-											}
-										}
-									} else {
-										try {
-											s = await connectDirect(addr, port, dataPayload, targetDoh);
-										} catch (err) {
-											if (useFallback && activeProxyIP) {
-												s = await connectDirect(fHost, fPort, dataPayload, targetDoh);
-											} else {
-												throw err;
-											}
-										}
-									}
-								}
+								s = await connectDirect(addr, port, dataPayload, targetDoh);
 							}
 						remoteConnWrapper.socket = s;
 						s.closed.catch(() => {}).finally(() => closeSocketQuietly(serverSock));
@@ -2496,59 +2264,46 @@ async function connectStreams(remoteSocket, webSocket, headerData, retryFunc, on
 	}
 	if (!hasData && retryFunc) await retryFunc();
 }
-async function connectDirect(targetHost, targetPort, initialData, targetDoh) {
-	let socket = null;
-	try {
-		socket = connect({ hostname: targetHost, port: targetPort });
-		const writer = socket.writable.getWriter();
-		if (initialData && initialData.byteLength > 0) {
-			await writer.write(initialData);
-		}
-		writer.releaseLock();
-		return socket;
-	} catch (e) {
-		if (socket) {
-			try {
-				await socket.close();
-			} catch (err) {}
-		}
-		throw new Error(`Connection failed to ${targetHost}:${targetPort}`);
+
+async function connectDirect(address, port, initialData = null, targetDoh = "https://cloudflare-dns.com/dns-query") {
+	const socket = connect({ hostname: address, port: port });
+	await Promise.race([socket.opened, new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000))]);
+	if (initialData && initialData.byteLength > 0) {
+		const w = socket.writable.getWriter();
+		await w.write(convertToUint8Array(initialData));
+		w.releaseLock();
 	}
+	return socket;
 }
 async function forwardvIeesUDP(udpChunk, webSocket, respHeader, onBytes, dnsServer = "8.8.4.4") {
-	const requestData = convertToUint8Array(udpChunk);
-	try {
-		const tcpSocket = connect({ hostname: dnsServer, port: 53 });
-		let vIeesHeader = respHeader;
-		const writer = tcpSocket.writable.getWriter();
-		
-		const lengthBuffer = new Uint8Array(2);
-		const reqLen = requestData.byteLength;
-		lengthBuffer[0] = reqLen >> 8;
-		lengthBuffer[1] = reqLen & 0xff;
-		await writer.write(concatBytes(lengthBuffer, requestData));
-		writer.releaseLock();
-		
-		await tcpSocket.readable.pipeTo(
-			new WritableStream({
-				async write(chunk) {
-					const rawResponse = convertToUint8Array(chunk);
-					const response = rawResponse.byteLength > 2 ? rawResponse.slice(2) : rawResponse;
-					if (typeof onBytes === "function") onBytes(response.byteLength);
-					if (webSocket.readyState !== WebSocket.OPEN) return;
-					if (vIeesHeader) {
-						const merged = new Uint8Array(vIeesHeader.length + response.byteLength);
-						merged.set(vIeesHeader, 0);
-						merged.set(response, vIeesHeader.length);
-						webSocket.send(merged.buffer);
-						vIeesHeader = null;
-					} else {
-						webSocket.send(response);
-					}
-				},
-			}),
-		);
-	} catch (e) {}
+    const requestData = convertToUint8Array(udpChunk);
+    try {
+        const tcpSocket = connect({ hostname: dnsServer, port: 53 });
+        let vIeesHeader = respHeader;
+        const writer = tcpSocket.writable.getWriter();
+        
+        await writer.write(requestData);
+        writer.releaseLock();
+        
+        await tcpSocket.readable.pipeTo(
+            new WritableStream({
+                async write(chunk) {
+                    const rawResponse = convertToUint8Array(chunk);
+                    if (typeof onBytes === "function") onBytes(rawResponse.byteLength);
+                    if (webSocket.readyState !== WebSocket.OPEN) return;
+                    if (vIeesHeader) {
+                        const merged = new Uint8Array(vIeesHeader.length + rawResponse.byteLength);
+                        merged.set(vIeesHeader, 0);
+                        merged.set(rawResponse, vIeesHeader.length);
+                        webSocket.send(merged.buffer);
+                        vIeesHeader = null;
+                    } else {
+                        webSocket.send(rawResponse);
+                    }
+                },
+            }),
+        );
+    } catch (e) {}
 }
 function extractUUIDFromvIees(data) {
 	if (data.byteLength < 17) return null;
@@ -3612,20 +3367,6 @@ const HTML_TEMPLATES = {
                                         <input type="checkbox" id="input-auto-rotate-user-proxy" class="sr-only peer">
                                         <div class="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-zinc-700 peer-checked:bg-green-600 transition-colors after:content-[''] after:absolute after:top-[2px] after:right-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-transform peer-checked:after:-translate-x-[18px]"></div>
                                     </label>
-                                </div>
-                            </div>
-                        </div>
-                        <div id="user-cf-proxy-section" class="transition-opacity duration-300 pt-2 border-t-2 border-gray-300 dark:border-amoled-border mt-auto">
-                            <label class="block text-sm font-medium mb-1.5 text-gray-700 dark:text-zinc-300">ثابت کردن کشور (Cloudflare)</label>
-                            <div class="mb-2">
-                                <input type="text" id="user-location-search" oninput="filterUserLocations()" placeholder="جستجوی شهر، کشور یا IATA" class="w-full px-3 py-2 bg-gray-50 dark:bg-amoled-input border border-gray-200 dark:border-amoled-border rounded-md shadow-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-700 dark:text-zinc-200 transition">
-                            </div>
-                            <div class="relative">
-                                <select id="user-location-select" class="w-full pl-8 pr-3 py-2.5 bg-gray-50 dark:bg-amoled-input border border-gray-200 dark:border-amoled-border rounded-md shadow-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-700 dark:text-zinc-200 cursor-pointer appearance-none">
-                                    <option value="">بدون لوکیشن (پیش‌فرض)</option>
-                                </select>
-                                <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-gray-500 dark:text-zinc-400">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                                 </div>
                             </div>
                         </div>
@@ -5178,54 +4919,19 @@ function editUser(encodedUsername) {
             if (userSelect) userSelect.innerHTML = userHtml;
         }
 async function loadLocations() {
-    const cachedLocations = localStorage.getItem('cached_locations_list');
-    const cachedActiveIata = localStorage.getItem('cached_active_iata') || '';
-    let hasCachedLocs = false;
-    if (cachedLocations) {
-        try {
-            const parsedLocs = JSON.parse(cachedLocations);
-            if (Array.isArray(parsedLocs) && parsedLocs.length > 0) {
-                renderLocationsUI(parsedLocs, cachedActiveIata);
-                hasCachedLocs = true;
-            }
-        } catch(e) {}
-    }
-    try {
-        const locRes = await fetch('/locations');
-        if (locRes.ok) {
-            const locData = await locRes.json();
-            if (Array.isArray(locData) && locData.length > 0) {
-                localStorage.setItem('cached_locations_list', JSON.stringify(locData));
-                hasCachedLocs = true;
-            }
-        }
-        const updatedCachedLocs = localStorage.getItem('cached_locations_list');
-        if (updatedCachedLocs) {
-            const parsed = JSON.parse(updatedCachedLocs);
-            renderLocationsUI(parsed, cachedActiveIata);
-        }
-    } catch (err) {}
+    return;
 }
 function saveSettings() {
     toggleSettingsModal(false);
     showToast('✅ تنظیمات با موفقیت ذخیره شد.');
 }
 window.toggleUserProxyMode = function(isSocksMode) {
-    const cfSection = document.getElementById('user-cf-proxy-section');
     const socksContainer = document.getElementById('user-socks5-container');
-    const locationSelect = document.getElementById('user-location-select');
-    const locationSearch = document.getElementById('user-location-search');
     const socksInput = document.getElementById('user-socks5-input');
     if (isSocksMode) {
-        if (cfSection) cfSection.classList.add('opacity-50', 'pointer-events-none');
-        if (locationSelect) locationSelect.disabled = true;
-        if (locationSearch) locationSearch.disabled = true;
         if (socksContainer) socksContainer.classList.remove('opacity-50', 'pointer-events-none');
         if (socksInput) socksInput.disabled = false;
     } else {
-        if (cfSection) cfSection.classList.remove('opacity-50', 'pointer-events-none');
-        if (locationSelect) locationSelect.disabled = false;
-        if (locationSearch) locationSearch.disabled = false;
         if (socksContainer) socksContainer.classList.add('opacity-50', 'pointer-events-none');
         if (socksInput) socksInput.disabled = true;
     }
@@ -5532,7 +5238,7 @@ async function testUserSocksProxy() {
                 window.location.reload();
             }
         }
-const CURRENT_VERSION = '1.9.11';
+const CURRENT_VERSION = '1.9.12';
 const UPDATE_FIX = "constsCURRENT_VERSION='d.d.d'";
 		async function checkForUpdates(isManual = false) {
             try {
