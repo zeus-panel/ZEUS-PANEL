@@ -3,6 +3,7 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const net = require('net');
+const { URL } = require('url');
 
 const PROXY_DIR = path.join(__dirname, 'proxy');
 
@@ -12,77 +13,122 @@ const SOURCES = {
         'https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt',
         'https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt',
         'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt',
+        'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies_anonymous/socks5.txt',
+        'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/all.txt',
         'https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks5.txt',
-        'https://raw.githubusercontent.com/officialputuid/Socks5-Proxy-List/master/socks5.txt',
         'https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt',
         'https://raw.githubusercontent.com/r00tee/Proxy-List/main/Socks5.txt',
         'https://raw.githubusercontent.com/Thordata/awesome-free-proxy-list/main/proxies/socks5.txt',
-        'https://raw.githubusercontent.com/databay-labs/free-proxy-list/main/socks5.txt',
         'https://raw.githubusercontent.com/proxygenerator1/ProxyGenerator/main/MostStable/socks5.txt',
         'https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt',
-        'https://raw.githubusercontent.com/B4atman/Proxy-List/main/socks5.txt',
-        'https://raw.githubusercontent.com/MuRongPignut/free-proxy-list/main/socks5.txt',
         'https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt',
-        'https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt',
-        'https://raw.githubusercontent.com/UptimerBot/proxy-list/main/socks5.txt',
         'https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks5.txt',
         'https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/socks5.txt',
-        'https://raw.githubusercontent.com/Zaeem20/Free-Proxy-List/master/socks5.txt',
         'https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/socks5.txt',
-        'https://raw.githubusercontent.com/elliotwutingfeng/go-fast-proxy/main/proxies/socks5.txt',
         'https://raw.githubusercontent.com/prxchk/proxy-list/main/socks5.txt',
-        'https://raw.githubusercontent.com/saisuiu/Lion-Proxy/main/socks5.txt',
-        'https://raw.githubusercontent.com/casals-ar/proxy-list/main/socks5.txt',
-        'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt'
+        'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt',
+        'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/all/data.txt',
+        'https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/socks5.txt',
+        'https://raw.githubusercontent.com/zevtyardt/proxy-list/main/socks5.txt',
+        'https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt',
+        'https://openproxylist.xyz/socks5.txt'
     ],
     socks4: [
         'https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&protocol=socks4&proxy_format=ipport&format=text',
         'https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks4.txt',
         'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt',
+        'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies_anonymous/socks4.txt',
+        'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/all.txt',
         'https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks4.txt',
         'https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks4.txt',
         'https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS4_RAW.txt',
         'https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks4.txt',
-        'https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks4.txt',
-        'https://raw.githubusercontent.com/UptimerBot/proxy-list/main/socks4.txt',
-        'https://raw.githubusercontent.com/Zaeem20/Free-Proxy-List/master/socks4.txt',
         'https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/socks4.txt',
-        'https://raw.githubusercontent.com/elliotwutingfeng/go-fast-proxy/main/proxies/socks4.txt',
         'https://raw.githubusercontent.com/prxchk/proxy-list/main/socks4.txt',
-        'https://raw.githubusercontent.com/saisuiu/Lion-Proxy/main/socks4.txt',
-        'https://raw.githubusercontent.com/casals-ar/proxy-list/main/socks4.txt',
-        'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks4/data.txt'
+        'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks4/data.txt',
+        'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/all/data.txt',
+        'https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/socks4.txt',
+        'https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/socks4.txt',
+        'https://raw.githubusercontent.com/r00tee/Proxy-List/main/Socks4.txt',
+        'https://raw.githubusercontent.com/Thordata/awesome-free-proxy-list/main/proxies/socks4.txt',
+        'https://raw.githubusercontent.com/proxygenerator1/ProxyGenerator/main/MostStable/socks4.txt',
+        'https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/socks4.txt',
+        'https://raw.githubusercontent.com/zevtyardt/proxy-list/main/socks4.txt',
+        'https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt',
+        'https://openproxylist.xyz/socks4.txt'
     ],
     http: [
         'https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&protocol=http&proxy_format=ipport&format=text',
         'https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt',
         'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt',
+        'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies_anonymous/http.txt',
+        'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/all.txt',
         'https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/http.txt',
         'https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt',
+        'https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-https.txt',
         'https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt',
         'https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt',
-        'https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt',
-        'https://raw.githubusercontent.com/UptimerBot/proxy-list/main/http.txt',
-        'https://raw.githubusercontent.com/Zaeem20/Free-Proxy-List/master/http.txt',
         'https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt',
-        'https://raw.githubusercontent.com/elliotwutingfeng/go-fast-proxy/main/proxies/http.txt',
+        'https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/https.txt',
         'https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt',
-        'https://raw.githubusercontent.com/saisuiu/Lion-Proxy/main/http.txt',
-        'https://raw.githubusercontent.com/casals-ar/proxy-list/main/http.txt',
-        'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt'
+        'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt',
+        'https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/all/data.txt',
+        'https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/http.txt',
+        'https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/proxies/http.txt',
+        'https://raw.githubusercontent.com/r00tee/Proxy-List/main/Http.txt',
+        'https://raw.githubusercontent.com/r00tee/Proxy-List/main/Https.txt',
+        'https://raw.githubusercontent.com/Thordata/awesome-free-proxy-list/main/proxies/http.txt',
+        'https://raw.githubusercontent.com/proxygenerator1/ProxyGenerator/main/MostStable/http.txt',
+        'https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/http.txt',
+        'https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/https.txt',
+        'https://raw.githubusercontent.com/zevtyardt/proxy-list/main/http.txt',
+        'https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt',
+        'https://openproxylist.xyz/http.txt'
     ]
 };
 
-function fetchText(url) {
+function fetchText(targetUrl, redirectsLeft = 3) {
     return new Promise((resolve) => {
-        https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-            let data = '';
-            res.on('data', (chunk) => { data += chunk; });
-            res.on('end', () => resolve(data));
-        }).on('error', (err) => {
-            console.error(`Failed to fetch from ${url}:`, err.message);
+        try {
+            const parsed = new URL(targetUrl);
+            const client = parsed.protocol === 'https:' ? https : http;
+            const req = client.get(targetUrl, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+                timeout: 8000
+            }, (res) => {
+                if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
+                    let redirectUrl = res.headers.location;
+                    if (!redirectUrl.startsWith('http')) {
+                        redirectUrl = new URL(redirectUrl, targetUrl).href;
+                    }
+                    return fetchText(redirectUrl, redirectsLeft - 1).then(resolve);
+                }
+                if (res.statusCode !== 200) {
+                    return resolve('');
+                }
+                let data = '';
+                res.on('data', (chunk) => { data += chunk; });
+                res.on('end', () => resolve(data));
+            });
+            req.on('error', () => resolve(''));
+            req.on('timeout', () => { req.destroy(); resolve(''); });
+        } catch (e) {
             resolve('');
-        });
+        }
+    });
+}
+
+function isValidIpPort(str) {
+    const parts = str.split(':');
+    if (parts.length !== 2) return false;
+    const ip = parts[0];
+    const port = parseInt(parts[1], 10);
+    if (isNaN(port) || port <= 0 || port > 65535) return false;
+    const octets = ip.split('.');
+    if (octets.length !== 4) return false;
+    return octets.every(o => {
+        const n = parseInt(o, 10);
+        return !isNaN(n) && n >= 0 && n <= 255 && o === n.toString();
     });
 }
 
@@ -144,12 +190,10 @@ function checkSocks4(host, port, timeout = 3000) {
         socket.setTimeout(timeout);
         
         socket.connect(port, host, () => {
-            // SOCKS4 connect request header (CONNECT to 1.1.1.1:80)
             socket.write(Buffer.from([0x04, 0x01, 0x00, 0x50, 0x01, 0x01, 0x01, 0x01, 0x00]));
         });
 
         socket.on('data', (data) => {
-            // SOCKS4 server reply format: [0x00, status, ...] where status 0x5a (90) means success
             if (data.length >= 2 && data[0] === 0x00 && data[1] === 0x5a) {
                 cleanup(true);
             } else {
@@ -244,17 +288,24 @@ function batchGeoLookup(ips) {
 }
 
 async function main() {
-    console.log('Fetching SOCKS5, SOCKS4, and HTTP proxy lists from sources...');
+    console.log('Fetching SOCKS5, SOCKS4, and HTTP proxy lists in parallel from verified sources...');
     const allProxies = { socks5: new Set(), socks4: new Set(), http: new Set() };
     
     for (const protocol of ['socks5', 'socks4', 'http']) {
-        for (const url of SOURCES[protocol]) {
-            const text = await fetchText(url);
+        const fetchPromises = SOURCES[protocol].map(url => fetchText(url));
+        const fetchedTexts = await Promise.all(fetchPromises);
+        
+        fetchedTexts.forEach(text => {
+            if (!text) return;
             const matches = text.match(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+\b/g);
             if (matches) {
-                matches.forEach(p => allProxies[protocol].add(p));
+                matches.forEach(p => {
+                    if (isValidIpPort(p)) {
+                        allProxies[protocol].add(p);
+                    }
+                });
             }
-        }
+        });
     }
     
     console.log(`Fetched unique raw proxies: ${allProxies.socks5.size} SOCKS5, ${allProxies.socks4.size} SOCKS4, ${allProxies.http.size} HTTP.`);
@@ -291,11 +342,10 @@ async function main() {
         });
     });
 
-    // Shuffle all candidates to mix protocols and hosts
     const shuffledTasks = tasks.sort(() => 0.5 - Math.random());
-    console.log(`Testing ${shuffledTasks.length} random candidates concurrently (limit: 150)...`);
+    console.log(`Testing ${shuffledTasks.length} candidates concurrently (concurrency limit: 100)...`);
     
-    const testResults = await limitConcurrency(shuffledTasks, 150);
+    const testResults = await limitConcurrency(shuffledTasks, 100);
     const workingProxies = testResults.filter(r => r.ok);
     console.log(`Found ${workingProxies.length} working proxies.`);
     
@@ -308,12 +358,10 @@ async function main() {
     const workingIps = workingProxies.map(r => r.host);
     const geoData = [];
     
-    // ip-api.com batch accepts max 100 queries per request
     for (let i = 0; i < workingIps.length; i += 100) {
         const batch = workingIps.slice(i, i + 100);
         const res = await batchGeoLookup(batch);
         geoData.push(...res);
-        // Wait 1.5 seconds to avoid exceeding ip-api.com rate limits (max 15 batch requests per minute)
         await new Promise(resolve => setTimeout(resolve, 1500));
     }
     
@@ -324,12 +372,10 @@ async function main() {
         }
     });
     
-    // Group proxies by country, and always keep a global list for ALL
     const countryGroups = { ALL: [] };
     workingProxies.forEach(item => {
         const country = geoMap.get(item.host);
         
-        // Add to country-specific group if country resolved
         if (country) {
             if (!countryGroups[country]) {
                 countryGroups[country] = [];
@@ -337,7 +383,6 @@ async function main() {
             countryGroups[country].push(item.proxy);
         }
         
-        // Always add to the global ALL list
         countryGroups.ALL.push(item.proxy);
     });
     
@@ -346,7 +391,6 @@ async function main() {
         fs.mkdirSync(PROXY_DIR);
     }
     
-    // Write new working proxies to country files
     for (const [country, proxies] of Object.entries(countryGroups)) {
         if (proxies.length === 0) continue;
         const filename = `${country}.txt`;
