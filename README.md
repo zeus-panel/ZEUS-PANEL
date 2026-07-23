@@ -1,5 +1,5 @@
 <div align="center">
-
+  
 # ⚡ ZEUS PANEL
 
 [![Version](https://img.shields.io/badge/Version-v1.9.9-blue.svg?style=for-the-badge&logo=cloudflare)](https://github.com/zeus-panel/ZEUS-PANEL)
@@ -46,7 +46,7 @@
 
 ---
 
-## ⚡️ Key Features
+# ⚡️ Features
 
 * 🌐 **Fixed IP & Geolocation:** Seamlessly bind specific countries or static proxy IPs to individual users.
 * 👥 **Advanced User Management:** Enforce strict limits based on traffic volume (GB), time expiration (Days), total requests, and concurrent devices.
@@ -66,7 +66,7 @@
 
 ---
 
-## 🚀 Quick Deployment Guide
+# 🚀 Quick Deployment Guide
 
 <div align="center">
 
@@ -88,7 +88,7 @@ First, log into your Cloudflare dashboard. Ensure you are using a verified email
 
 <br>
 
-### 🤖 Method 1: Deploy via Telegram Bot (Recommended)
+## 🤖 Method 1: Deploy via Telegram Bot (Recommended)
 
 1. 🌐 Access the **[ZEUS Telegram Bot](https://t.me/ZEUS_PANEL_BOT)** and click `Start`.
 2. 👤 From the main menu, click on **"➕ Register Cloudflare Account"**.
@@ -109,7 +109,7 @@ First, log into your Cloudflare dashboard. Ensure you are using a verified email
 
 <br>
 
-### 🌐 Method 2: Deploy via Web Installer
+## 🌐 Method 2: Deploy via Web Installer
 
 1. 🌐 Access the **[Web Deployer Site](https://zeus-panel.ir-netlify.workers.dev/paneI)**.
 2. 🟧 Click the orange **"Get Token"** button to be redirected to your Cloudflare account.
@@ -125,7 +125,7 @@ First, log into your Cloudflare dashboard. Ensure you are using a verified email
 ---
 
 
-## 🛡️ Build Your Own SOCKS5 Proxy (Zeus Relay)
+# 🛡️ Build Your Own SOCKS5 Proxy (Zeus Relay)
 
 A dedicated bash script is provided to instantly deploy a private, secure SOCKS5 proxy on any Linux VPS (Ubuntu, Debian, CentOS, Rocky Linux). This is highly recommended for users who wish to create VIP residential proxies to route traffic through clean, dedicated IPs.
 
@@ -139,7 +139,7 @@ The script features an interactive menu, automatic port configuration, random se
 
 ---
 
-## 💰 Donate & Support
+# 💰 Donate & Support
 
 <p align="center">Built with ❤️</p>
 
@@ -175,7 +175,7 @@ The source code is published solely for transparency and personal deployment. Fo
 
 ---
 
-### Credits
+## Credits
 This panel was originally conceptualized and authored by Arad and Morgan. The current version represents an extended, highly optimized, and heavily refactored iteration of that core logic.
 
 * **Original Authors:** The baseline concept and initial framework belong to [AG-Morgan](https://github.com/AG-Morgan) and [aradava](https://github.com/aradava).
