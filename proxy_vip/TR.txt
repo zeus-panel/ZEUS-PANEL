@@ -1,2 +1,0 @@
-socks5://Alis:vaslim@yami.alis1.ir:503
-https://Alis:vaslim@yami.alis1.ir:503
